@@ -1,0 +1,25 @@
+# Free option: any VPS (e.g. Oracle Cloud Always Free) + a free DuckDNS subdomain. Caddy issues HTTPS automatically.
+# 1) set DOMAIN in .env (e.g. caseflip.duckdns.org) and point it to the server IP
+# 2) docker compose up -d
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      - PUBLIC_URL=https://${DOMAIN}
+      - DATA_DIR=/data
+      - DEMO_MODE=1
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
+      - STEAM_API_KEY=${STEAM_API_KEY}
+    volumes:
+      - data:/data
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    command: caddy reverse-proxy --from ${DOMAIN} --to app:8080
+    volumes:
+      - caddy:/data
+volumes:
+  data:
+  caddy:

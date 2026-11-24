@@ -1,0 +1,13 @@
+{
+  "name": "caseflip",
+  "version": "3.0.0",
+  "private": true,
+  "description": "CaseFlip: cases, upgrades, contracts, battles and crash with provably fair rolls (demo, virtual balance)",
+  "main": "server/server.js",
+  "scripts": {
+    "build": "node build.js",
+    "start": "node --no-warnings server/server.js",
+    "test": "node test.js"
+  },
+  "engines": { "node": ">=22.5" }
+}

@@ -1,0 +1,9 @@
+data
+.git
+node_modules
+img
+*.py
+prices_raw.json
+data_skins.json
+sprite_names.json
+skin_manifest.json

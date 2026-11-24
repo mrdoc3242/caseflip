@@ -1,0 +1,22 @@
+# Render Blueprint: New > Blueprint > pick this repo.
+# Free plan: no persistent disk, so the SQLite database resets when the service restarts or redeploys.
+# For a permanent database switch plan to "starter" and uncomment the disk block (~$7.25/month).
+services:
+  - type: web
+    name: caseflip
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    # disk:
+    #   name: data
+    #   mountPath: /data
+    #   sizeGB: 1
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: DEMO_MODE
+        value: "1"
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: STEAM_API_KEY
+        sync: false
