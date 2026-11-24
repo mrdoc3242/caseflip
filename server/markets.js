@@ -15,35 +15,67 @@ async function getJson(url, timeoutMs = 20000) {
 const toUnits = usd => Math.round(usd * 1000);
 const fromUnits = u => Math.round(u) / 1000;
 
+// The account currency is whatever the user picked on Market.CSGO (USD, EUR or RUB). Site prices stay in USD:
+// we read the USD list for prices and convert buy ceilings / balance with a rate taken from the two public lists.
+// API price units: USD/EUR 1000 = 1.00, RUB 100 = 1 rub (kopecks).
 function marketCsgo(key, base = 'https://market.csgo.com') {
   const api = (method, params = {}) => {
     const q = new URLSearchParams({ key, ...params });
     return getJson(`${base}/api/v2/${method}?${q}`);
   };
+  const st = { cur: null, rate: 1, rateAt: 0 };
+  const unitsPer = () => (st.cur === 'RUB' ? 100 : 1000);
+  async function currency() {
+    if (st.cur) return st.cur;
+    const d = await api('get-money');
+    st.cur = String(d.currency || 'USD').toUpperCase();
+    return st.cur;
+  }
+  // account-currency units per 1 USD, median ratio over liquid items in both public lists
+  async function rate() {
+    const cur = await currency();
+    if (cur === 'USD') return 1;
+    if (Date.now() - st.rateAt < 3600e3) return st.rate;
+    const [u, o] = await Promise.all([getJson(`${base}/api/v2/prices/USD.json`, 60000), getJson(`${base}/api/v2/prices/${cur}.json`, 60000)]);
+    const um = new Map(); for (const it of u.items || []) if (+it.volume >= 20) um.set(it.market_hash_name, parseFloat(it.price));
+    const r = []; for (const it of o.items || []) { const a = um.get(it.market_hash_name), b = parseFloat(it.price); if (a > 1 && b > 0) r.push(b / a); }
+    if (r.length < 50) throw new Error('cannot derive ' + cur + ' rate');
+    r.sort((x, y) => x - y); st.rate = r[r.length >> 1]; st.rateAt = Date.now();
+    return st.rate;
+  }
   return {
-    id: 'marketcsgo', name: 'Market.CSGO', enabled: !!key,
+    id: 'marketcsgo', name: 'Market.CSGO', enabled: !!key, state: st,
     // public list, no key needed: { items: [{ market_hash_name, price: "13.754", volume }] }
     async prices() {
       const d = await getJson(`${base}/api/v2/prices/USD.json`, 60000);
       if (!d.success || !Array.isArray(d.items)) throw new Error('bad price list');
       const m = new Map();
       for (const it of d.items) { const p = parseFloat(it.price); if (it.market_hash_name && p > 0) m.set(it.market_hash_name, { price: p, count: +it.volume || 1 }); }
+      if (key) { st.rateAt = 0; rate().catch(() => {}); }
       return m;
     },
-    async balance() { const d = await api('get-money'); if (d.currency && d.currency !== 'USD') throw new Error('Market.CSGO account currency must be USD, got ' + d.currency); return parseFloat(d.money) || 0; },
+    // in USD
+    async balance() {
+      const d = await api('get-money'); if (!d.success && d.error) throw new Error(String(d.error));
+      st.cur = String(d.currency || 'USD').toUpperCase();
+      return (parseFloat(d.money) || 0) / (await rate());
+    },
     // never retried by us: a repeated buy-for pays twice. Recovery goes through status(customId).
     async buy({ name, maxUsd, partner, token, customId }) {
-      const d = await api('buy-for', { hash_name: name, price: String(toUnits(maxUsd)), partner, token, custom_id: customId });
+      const r = await rate();
+      const price = Math.round(maxUsd * r * unitsPer());
+      const d = await api('buy-for', { hash_name: name, price: String(price), partner, token, custom_id: customId });
       return d.success ? { ok: true, extId: String(d.id) } : { ok: false, error: String(d.error || d.message || 'buy failed') };
     },
     // stage 1 = new, 2 = item given, 5 = timed out / cancelled
     async status(customIds) {
       const q = new URLSearchParams({ key }); customIds.forEach(id => q.append('custom_id[]', id));
       const d = await getJson(`${base}/api/v2/get-list-buy-info-by-custom-id?${q}`);
+      const r = await rate().catch(() => st.rate || 1);
       const out = {};
       for (const [cid, info] of Object.entries((d && d.data) || {})) {
-        const st = +info.stage;
-        out[cid] = { state: st === 2 ? 'delivered' : st === 5 ? 'failed' : 'pending', paid: info.paid != null ? fromUnits(+info.paid) : null, reason: info.cancellation_reason || null, tradeId: info.trade_id || null };
+        const s2 = +info.stage;
+        out[cid] = { state: s2 === 2 ? 'delivered' : s2 === 5 ? 'failed' : 'pending', paid: info.paid != null ? Math.round(+info.paid / unitsPer() / r * 1000) / 1000 : null, reason: info.cancellation_reason || null, tradeId: info.trade_id || null };
       }
       return out;
     },
