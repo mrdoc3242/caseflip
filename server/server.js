@@ -461,7 +461,8 @@ const ROUTES = {
     if (noMarket.length) { items.forEach(x => u.S.inv.unshift(x)); throw new HttpError(400, 'Этот предмет нельзя вывести, его можно продать или поставить в апгрейд'); }
     if (value < LIMITS.withdrawMinUsd || day.s + value > LIMITS.withdrawDailyUsd) { items.forEach(x => u.S.inv.unshift(x)); throw new HttpError(400, `Вывод от $${LIMITS.withdrawMinUsd} и до $${LIMITS.withdrawDailyUsd} в сутки (осталось $${(LIMITS.withdrawDailyUsd - day.s).toFixed(2)})`); }
     q('UPDATE users SET trade_url=? WHERE id=?').run(trade, u.id);
-    const auto = MARKETS.list().some(m => m.enabled) && value <= LIMITS.withdrawAutoUsd;
+    const auto = !DEMO && MARKETS.list().some(m => m.enabled) && value <= LIMITS.withdrawAutoUsd;
+    // DEMO_MODE: balances are virtual, so nothing is bought automatically; the admin approves each request by hand.
     const id = Number(q('INSERT INTO withdrawals(user_id,items,value,trade_url,status,t) VALUES(?,?,?,?,?,?)').run(u.id, JSON.stringify(items), value, trade, auto ? 'processing' : 'pending', now()).lastInsertRowid);
     for (const x of items) q('INSERT INTO purchases(withdrawal_id,user_id,item_id,name,value,status,t,updated) VALUES(?,?,?,?,?,?,?,?)').run(id, u.id, x.id, marketName(x.id), IT(x.id).price, auto ? 'queued' : 'hold', now(), now());
     saveUser(u); if (auto) setTimeout(withdrawTick, 100); return { id, value, auto };
