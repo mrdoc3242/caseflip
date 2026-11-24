@@ -483,6 +483,9 @@ const ROUTES = {
     return { ok: true };
   },
   'GET /api/admin/markets': async (c) => { admin(c); const out = {}; for (const m of MARKETS.list()) { out[m.id] = { enabled: m.enabled }; if (m.enabled) try { out[m.id].balance = await m.balance(); } catch (e) { out[m.id].error = e.message; } } return { markets: out, queue: q('SELECT status, COUNT(*) n, COALESCE(SUM(value),0) v FROM purchases GROUP BY status').all() }; },
+  // Test purchase straight to a trade link, bypassing the site inventory: checks the market key, balance and delivery.
+  'POST /api/admin/test-buy': async (c) => { admin(c); const b = c.body || {}; const tl = tradeParts(b.tradeUrl); if (!tl) throw new HttpError(400, 'tradeUrl'); const m = MARKETS.all[b.market || 'marketcsgo']; if (!m || !m.enabled) throw new HttpError(400, 'market off'); const customId = 'test-' + Date.now(); const r = await m.buy({ name: String(b.name || ''), maxUsd: +b.maxUsd || 0.01, partner: tl.partner, token: tl.token, customId }); log('test-buy', b.name, JSON.stringify(r)); return { customId, ...r }; },
+  'GET /api/admin/test-status': async (c) => { admin(c); const m = MARKETS.all[c.url.searchParams.get('market') || 'marketcsgo']; const id = c.url.searchParams.get('id'); return (await m.status([id]))[id] || { state: 'unknown' }; },
   'GET /api/admin/purchases': (c) => { admin(c); return q('SELECT * FROM purchases ORDER BY id DESC LIMIT 200').all(); },
   'POST /api/admin/ban': (c) => { admin(c); q('UPDATE users SET banned=? WHERE id=?').run(c.body.banned ? 1 : 0, +c.body.id); return { ok: true }; },
   'POST /api/admin/chat/hide': (c) => { admin(c); q('UPDATE chat SET hidden=1 WHERE id=?').run(+c.body.id); broadcast('chat_hide', { id: +c.body.id }); return { ok: true }; },
