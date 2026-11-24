@@ -148,6 +148,7 @@ async function loadCatalog(){
     const r = await fetch('catalog.json', { cache: 'no-cache' }); const d = await r.json();
     const c = GAMES.buildCatalog(d); CAT_UPDATED = c.updated; CAT = c.CAT;
     CAT.forEach(it => CATMAP.set(it.id, it));
+    CF.applyPrices(n => CATMAP.get("m:" + n)); // case items follow live market prices, odds re-solved for 97.5%
   } catch (e) { CAT = []; }
 }
 function IT(id){ return CF.ITEMS[id] || CATMAP.get(id) || { id, weapon: 'Предмет', skin: 'недоступен', rarity: 'consumer', price: 0, type: 'rifle' }; }

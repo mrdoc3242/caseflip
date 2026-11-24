@@ -1,6 +1,9 @@
 
 // ---------- English phrase map (applied to rendered text when EN is on) ----------
 const I18N = {
+  'ждёт проверки': 'awaiting review', 'покупаем и отправляем': 'buying and sending', 'отправлено частично': 'partly sent', 'возвращено в инвентарь': 'returned to inventory', 'в очереди': 'queued', 'покупаем': 'buying', 'продавец отправляет трейд': 'seller is sending the trade', 'получено': 'received', 'вернули в инвентарь': 'returned to inventory', 'Где взять trade-ссылку': 'Where to find your trade link',
+  'Скин покупается на маркетплейсе, и продавец сам отправит вам трейд в Steam, обычно в течение 15 минут. Примите его. Если продавец не отправит, предмет вернётся в инвентарь.': 'The skin is bought on a marketplace and the seller sends you a Steam trade, usually within 15 minutes. Accept it. If the seller does not send it, the item returns to your inventory.',
+  'Этот предмет нельзя вывести, его можно продать или поставить в апгрейд': 'This item cannot be withdrawn, sell it or use it in an upgrade',
   'Ставка ·': 'Bet ·', 'r = HMAC-SHA256(seed, "crash:" + номер)': 'r = HMAC-SHA256(seed, "crash:" + round)',
   'Кейсы': 'Cases', 'Батлы': 'Battles', 'Краш': 'Crash', 'Апгрейд': 'Upgrade', 'Контракты': 'Contracts', 'Инвентарь': 'Inventory', 'Профиль': 'Profile', 'Честная игра': 'Fairness',
   'Демо-режим: баланс виртуальный, пополнение и вывод реальных денег и скинов отключены.': 'Demo mode: the balance is virtual, real money and skin deposits and withdrawals are disabled.',
@@ -61,6 +64,7 @@ const I18N = {
   'Здесь появятся лучшие дропы игроков.': 'Players’ best drops will show up here.', 'Здесь появятся ваши лучшие дропы.': 'Your best drops will show up here.',
 };
 const I18N_RE = [
+  [/^Заявка #(\d+): покупаем скин, ждите трейд в Steam$/, 'Request #$1: buying the skin, wait for a Steam trade'], [/^Заявка #(\d+) на (.+) создана и ждёт проверки$/, 'Request #$1 for $2 created and awaiting review'],
   [/^Открыть за (.+)$/, 'Open for $1'], [/^Продать за (.+)$/, 'Sell for $1'], [/^Купить за (.+)$/, 'Buy for $1'], [/^Продано на (.+)$/, 'Sold for $1'],
   [/^Окупился: (.+)$/, 'Profit: $1'], [/^Не окупился: (.+)$/, 'No profit: $1'],
   [/^(\d+) предметов · до (.+)$/, '$1 items · up to $2'], [/^Цена (.+) · (\d+) предметов$/, 'Price $1 · $2 items'],

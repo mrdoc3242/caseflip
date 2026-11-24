@@ -20,3 +20,9 @@ services:
         generateValue: true
       - key: STEAM_API_KEY
         sync: false
+      - key: MARKETCSGO_KEY
+        sync: false
+      - key: WAXPEER_KEY
+        sync: false
+      - key: WITHDRAW_AUTO_USD
+        value: "50"

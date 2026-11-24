@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 const CF = require('../src/engine.js');
 const G = require('../src/games.js');
+const MARKETS = require('./markets.js').fromEnv(process.env);
 
 // ---------- config ----------
 const env = (k, d) => process.env[k] ?? d;
@@ -27,6 +28,10 @@ const LIMITS = {
   withdrawDailyUsd: +env('WITHDRAW_DAILY_USD', 200),
   withdrawPerDay: +env('WITHDRAW_PER_DAY', 3),
   withdrawMinUsd: +env('WITHDRAW_MIN_USD', 1),
+  withdrawAutoUsd: +env('WITHDRAW_AUTO_USD', 50),     // requests up to this value are bought automatically, bigger ones wait for admin approval
+  withdrawSlippage: +env('WITHDRAW_SLIPPAGE', 0.10),  // pay at most site price +10% if the market moved since the last price update
+  withdrawAttempts: +env('WITHDRAW_ATTEMPTS', 2),     // markets tried per item before it is returned to the player
+  priceEveryMin: +env('PRICE_REFRESH_MIN', 60),
   wagerX: +env('WAGER_X', 3),               // wager this many times all bonus money before withdrawing
   refReward: +env('REF_REWARD', 5), refWager: +env('REF_WAGER', 20),
   chatLevel: +env('CHAT_MIN_LEVEL', 2),
@@ -47,6 +52,9 @@ CREATE TABLE IF NOT EXISTS promo(code TEXT PRIMARY KEY, amount REAL, max_uses IN
 CREATE TABLE IF NOT EXISTS chat(id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, lv INTEGER, text TEXT, t INTEGER, hidden INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS feed(id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, item TEXT, price REAL, src TEXT, t INTEGER);
 CREATE TABLE IF NOT EXISTS withdrawals(id INTEGER PRIMARY KEY, user_id INTEGER, items TEXT, value REAL, trade_url TEXT, status TEXT, t INTEGER, note TEXT);
+CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY, withdrawal_id INTEGER, user_id INTEGER, item_id TEXT, name TEXT, value REAL, status TEXT, market TEXT, custom_id TEXT, ext_id TEXT,
+  tried TEXT DEFAULT '[]', attempts INTEGER DEFAULT 0, paid REAL, reason TEXT, t INTEGER, updated INTEGER);
+CREATE INDEX IF NOT EXISTS purchases_s ON purchases(status);
 CREATE TABLE IF NOT EXISTS crash(id INTEGER PRIMARY KEY, seed TEXT, hash TEXT, point REAL, t INTEGER);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);`);
 const q = sql => db.prepare(sql);
@@ -58,40 +66,61 @@ function catalogPath() { const p = path.join(DATA, 'catalog.json'); return fs.ex
 function loadCatalog() {
   CATD = JSON.parse(fs.readFileSync(catalogPath(), 'utf8'));
   ({ CAT, CATMAP } = G.buildCatalog(CATD)); IT = G.makeIT(CATMAP);
+  CF.applyPrices(n => CATMAP.get('m:' + n)); // case items follow market prices, odds re-solved for 97.5%
   log('catalog', CAT.length, 'items, prices from', CATD.updated);
 }
 
-// Daily refresh at 12:00 Moscow (09:00 UTC) straight from the Skinport public API.
+// Prices come from the same marketplaces the site buys withdrawals on, so a skin costs the player
+// what it costs us. Site price = cheapest live offer across the markets. Skinport is only a fallback.
+// MARKET_PRICES keeps each market's own price per item to pick where to buy first.
+let MARKET_PRICES = {}; try { MARKET_PRICES = JSON.parse(fs.readFileSync(path.join(DATA, 'market_prices.json'), 'utf8')); } catch (e) {}
+const WEAR_RE = / \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/;
+const WE = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+async function fetchSkinport() {
+  const r = await fetch('https://api.skinport.com/v1/items?app_id=730&currency=USD&tradable=0', { headers: { 'Accept-Encoding': 'br', 'User-Agent': 'CaseFlip/1.0' } });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const m = new Map(); for (const it of await r.json()) { const p = it.min_price ?? it.suggested_price; if (it.market_hash_name && p > 0) m.set(it.market_hash_name, { price: p, count: it.quantity || 1 }); }
+  return m;
+}
 async function refreshPrices() {
   try {
-    const r = await fetch('https://api.skinport.com/v1/items?app_id=730&currency=USD&tradable=0', { headers: { 'Accept-Encoding': 'br', 'User-Agent': 'CaseFlip/1.0' } });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const list = await r.json();
+    const sources = {}, errors = {};
+    for (const mk of Object.values(MARKETS.all)) {
+      if (mk.id === 'waxpeer' && !mk.enabled) continue; // Waxpeer prices need a key; Market.CSGO's list is public
+      try { sources[mk.id] = await mk.prices(); } catch (e) { errors[mk.id] = e.message; }
+    }
+    let src = Object.keys(sources);
+    if (!src.length) { sources.skinport = await fetchSkinport(); src = ['skinport']; }
+    const per = {}, best = new Map();
+    for (const id of src) for (const [n, v] of sources[id]) {
+      if (!n.includes(' | ')) continue;
+      (per[n] = per[n] || {})[id] = v.price;
+      if (!best.has(n) || v.price < best.get(n)) best.set(n, v.price);
+    }
     const base = CATD.skins.map(([w, s]) => w + ' | ' + s); const idx = new Map(base.map((b, i) => [b, i]));
-    const WE = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
+    const caseNames = new Set(Object.values(CF.MH));
     const items = [];
-    for (const it of list) {
-      const n = it.market_hash_name; if (!n || !n.includes(' | ')) continue;
-      const p = it.suggested_price ?? it.min_price; if (p == null || p <= 0.5) continue;
+    for (const [n, p] of best) {
+      if (p <= 0.5 && !caseNames.has(n)) continue;
       const st = n.includes('StatTrak™') ? 1 : n.startsWith('Souvenir ') ? 2 : 0;
       let b = n.replace(/^StatTrak™ |^Souvenir /, '').replace('★ StatTrak™ ', '★ ');
-      const m = / \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/.exec(b); const w = m ? WE.indexOf(m[1]) : 5;
-      b = b.replace(/ \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$/, '');
+      const m = WEAR_RE.exec(b); const w = m ? WE.indexOf(m[1]) : 5; b = b.replace(WEAR_RE, '');
       if (!idx.has(b)) continue;
       items.push([idx.get(b), w, st, Math.round(p * 100) / 100]);
     }
     if (items.length < 1000) throw new Error('too few items: ' + items.length);
     items.sort((a, b) => a[3] - b[3]);
-    const out = { updated: new Date().toISOString(), skins: CATD.skins, items };
+    const out = { updated: new Date().toISOString(), source: src.join('+'), skins: CATD.skins, items };
     fs.writeFileSync(path.join(DATA, 'catalog.json.tmp'), JSON.stringify(out)); fs.renameSync(path.join(DATA, 'catalog.json.tmp'), path.join(DATA, 'catalog.json'));
-    loadCatalog(); q('INSERT OR REPLACE INTO kv VALUES(?,?)').run('prices', JSON.stringify({ ok: out.updated }));
-  } catch (e) { log('price refresh failed:', e.message); q('INSERT OR REPLACE INTO kv VALUES(?,?)').run('prices', JSON.stringify({ fail: new Date().toISOString(), error: e.message })); setTimeout(refreshPrices, 30 * 60e3); }
+    MARKET_PRICES = per; fs.writeFileSync(path.join(DATA, 'market_prices.json'), JSON.stringify(per));
+    loadCatalog(); q('INSERT OR REPLACE INTO kv VALUES(?,?)').run('prices', JSON.stringify({ ok: out.updated, source: out.source, items: items.length, errors }));
+    broadcast('prices', { updated: out.updated });
+  } catch (e) { log('price refresh failed:', e.message); q('INSERT OR REPLACE INTO kv VALUES(?,?)').run('prices', JSON.stringify({ fail: new Date().toISOString(), error: e.message })); }
 }
 function schedulePrices() {
-  const now = new Date(); const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 9, 0, 0));
-  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
-  setTimeout(() => { refreshPrices(); schedulePrices(); }, next - now);
-  if (Date.now() - Date.parse(CATD.updated) > 26 * 3600e3) refreshPrices();
+  // every PRICE_REFRESH_MIN minutes (default hourly), plus at startup when the list is older than that
+  setInterval(refreshPrices, Math.max(10, LIMITS.priceEveryMin) * 60e3).unref();
+  if (Date.now() - Date.parse(CATD.updated) > LIMITS.priceEveryMin * 60e3) setTimeout(refreshPrices, 5000);
 }
 
 // ---------- helpers ----------
@@ -242,6 +271,78 @@ function cashOut(b, m) {
   return settleCrash(b, payout, m).then(() => payout);
 }
 
+// ---------- withdrawals through P2P markets ----------
+// The market buys the cheapest offer under our price ceiling and the seller sends it straight to the player.
+// purchase.status: hold (waits for admin) → queued → buying → sent → delivered | refunded; waiting_funds when no market has balance.
+function marketName(id) { if (id.startsWith('m:')) return id.slice(2); const it = CF.ITEMS[id]; return it && it.mh || null; }
+function tradeParts(url) { const m = /partner=(\d+)&token=([\w-]+)/.exec(url || ''); return m ? { partner: m[1], token: m[2] } : null; }
+function refundPurchase(p, reason) {
+  q("UPDATE purchases SET status='refunded', reason=?, updated=? WHERE id=?").run(reason, now(), p.id);
+  withLock(p.user_id, async () => { const u = getUser(p.user_id); if (!u) return; u.S.inv.unshift({ uid: u.S.uid++, id: p.item_id }); saveUser(u); });
+}
+function updateWithdrawal(wid) {
+  const rows = q('SELECT status FROM purchases WHERE withdrawal_id=?').all(wid).map(r => r.status);
+  if (!rows.length) return;
+  const open = rows.some(s => ['hold', 'queued', 'buying', 'sent', 'waiting_funds'].includes(s));
+  const st = open ? (rows.every(s => s === 'hold') ? 'pending' : 'processing') : rows.every(s => s === 'delivered') ? 'sent' : rows.some(s => s === 'delivered') ? 'partial' : rows.every(s => s === 'cancelled') ? 'cancelled' : 'refunded';
+  q('UPDATE withdrawals SET status=? WHERE id=?').run(st, wid);
+}
+const balances = {};
+async function marketBalance(m) { const b = balances[m.id]; if (b && now() - b.t < 60e3) return b.v; const v = await m.balance(); balances[m.id] = { v, t: now() }; return v; }
+let ticking = false;
+async function withdrawTick() {
+  if (ticking) return; ticking = true;
+  try {
+    const markets = MARKETS.list().filter(m => m.enabled);
+    if (!markets.length) return;
+    // 1) poll trades in flight
+    for (const m of markets) {
+      const sent = q("SELECT * FROM purchases WHERE status IN ('sent','buying') AND market=?").all(m.id);
+      for (let i = 0; i < sent.length; i += 50) {
+        const chunk = sent.slice(i, i + 50); let st;
+        try { st = await m.status(chunk.map(p => p.custom_id)); } catch (e) { log('status', m.id, e.message); continue; }
+        for (const p of chunk) {
+          const r = st[p.custom_id];
+          if (!r) { if (p.status === 'buying' && now() - p.updated > 5 * 60e3) { q("UPDATE purchases SET status='queued', updated=? WHERE id=?").run(now(), p.id); } continue; } // a lost buy that never happened
+          if (r.state === 'delivered') q("UPDATE purchases SET status='delivered', paid=?, reason=NULL, updated=? WHERE id=?").run(r.paid, now(), p.id);
+          else if (r.state === 'failed') q("UPDATE purchases SET status='queued', reason=?, updated=? WHERE id=?").run(r.reason || 'продавец не передал предмет', now(), p.id);
+          else if (p.status === 'buying') q("UPDATE purchases SET status='sent', updated=? WHERE id=?").run(now(), p.id);
+          updateWithdrawal(p.withdrawal_id);
+        }
+      }
+    }
+    // 2) buy queued items: cheapest market first, skip markets already tried, refund after WITHDRAW_ATTEMPTS
+    for (const p of q("SELECT p.*, w.trade_url FROM purchases p JOIN withdrawals w ON w.id=p.withdrawal_id WHERE p.status IN ('queued','waiting_funds') ORDER BY p.id LIMIT 20").all()) {
+      const tl = tradeParts(p.trade_url); if (!tl) { refundPurchase(p, 'неверная trade-ссылка'); updateWithdrawal(p.withdrawal_id); continue; }
+      const tried = JSON.parse(p.tried || '[]');
+      if (p.attempts >= LIMITS.withdrawAttempts) { refundPurchase(p, p.reason || 'не удалось купить предмет'); updateWithdrawal(p.withdrawal_id); continue; }
+      const ceiling = Math.round(p.value * (1 + LIMITS.withdrawSlippage) * 100) / 100;
+      const mp = MARKET_PRICES[p.name] || {};
+      const order = markets.filter(m => !tried.includes(m.id)).sort((a, b) => (mp[a.id] ?? 1e12) - (mp[b.id] ?? 1e12));
+      if (!order.length) { refundPurchase(p, p.reason || 'предмета нет в продаже'); updateWithdrawal(p.withdrawal_id); continue; }
+      let bought = false, noFunds = 0, lastErr = null;
+      for (const m of order) {
+        if (mp[m.id] != null && mp[m.id] > ceiling) { tried.push(m.id); lastErr = 'цена на маркете выше'; continue; }
+        try { if (await marketBalance(m) < ceiling) { noFunds++; continue; } } catch (e) { lastErr = e.message; continue; }
+        const customId = `cf${p.id}a${p.attempts + 1}`;
+        q("UPDATE purchases SET status='buying', market=?, custom_id=?, attempts=attempts+1, updated=? WHERE id=?").run(m.id, customId, now(), p.id);
+        tried.push(m.id); q('UPDATE purchases SET tried=? WHERE id=?').run(JSON.stringify(tried), p.id);
+        let r; try { r = await m.buy({ name: p.name, maxUsd: ceiling, partner: tl.partner, token: tl.token, customId }); }
+        catch (e) { log('buy', m.id, p.id, e.message); bought = true; break; } // unknown outcome: stays 'buying', the status poll settles it
+        if (r.ok) { q("UPDATE purchases SET status='sent', ext_id=?, updated=? WHERE id=?").run(r.extId, now(), p.id); delete balances[m.id]; bought = true; break; }
+        lastErr = r.error; q("UPDATE purchases SET status='queued', reason=?, updated=? WHERE id=?").run(r.error, now(), p.id);
+      }
+      if (!bought) {
+        q('UPDATE purchases SET tried=? WHERE id=?').run(JSON.stringify(tried), p.id);
+        if (noFunds) q("UPDATE purchases SET status='waiting_funds', reason=?, updated=? WHERE id=?").run(lastErr || 'ждём пополнения баланса маркета', now(), p.id); // admin tops up, the item stays reserved
+        else refundPurchase(p, lastErr || 'не удалось купить предмет');
+      }
+      updateWithdrawal(p.withdrawal_id);
+    }
+  } catch (e) { log('withdrawTick', e.stack || e); } finally { ticking = false; }
+}
+setInterval(withdrawTick, (+env('WITHDRAW_TICK_SEC', 30)) * 1000).unref();
+
 // ---------- HTTP ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.webp': 'image/webp', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
 const CSP = "default-src 'self'; img-src 'self' data: https://*.steamstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://steamcommunity.com";
@@ -269,7 +370,8 @@ async function me(req, res, ip) {
   return profile(u);
 }
 function profile(u) {
-  const w = q("SELECT id, value, status, t FROM withdrawals WHERE user_id=? ORDER BY id DESC LIMIT 10").all(u.id);
+  const w = q("SELECT id, value, status, t, note FROM withdrawals WHERE user_id=? ORDER BY id DESC LIMIT 10").all(u.id);
+  for (const x of w) x.items = q('SELECT name, value, status, reason FROM purchases WHERE withdrawal_id=?').all(x.id);
   const refs = q('SELECT COUNT(*) n, COALESCE(SUM(ref_paid),0) paid FROM users WHERE referred_by=?').get(u.id);
   return { server: true, demo: DEMO, user: { id: u.id, steamid: u.steamid, name: displayName(u), avatar: u.avatar, ref: u.ref_code, refs: refs.n, refPaid: refs.paid, refEarned: u.ref_earned, tradeUrl: u.trade_url },
     state: publicState(u), withdrawals: w, limits: { wagerX: LIMITS.wagerX, withdrawDailyUsd: LIMITS.withdrawDailyUsd, refReward: LIMITS.refReward, refWager: LIMITS.refWager, chatLevel: LIMITS.chatLevel, maxBet: LIMITS.maxBet }, prices: CATD.updated };
@@ -355,22 +457,35 @@ const ROUTES = {
     const day = q("SELECT COUNT(*) n, COALESCE(SUM(value),0) s FROM withdrawals WHERE user_id=? AND t>? AND status!='cancelled'").get(u.id, now() - DAY);
     if (day.n >= LIMITS.withdrawPerDay) throw new HttpError(429, `Не больше ${LIMITS.withdrawPerDay} заявок в сутки`);
     const { items, value } = G.takeItems(u.S, c.body.uids, IT);
+    const noMarket = items.filter(x => !marketName(x.id));
+    if (noMarket.length) { items.forEach(x => u.S.inv.unshift(x)); throw new HttpError(400, 'Этот предмет нельзя вывести, его можно продать или поставить в апгрейд'); }
     if (value < LIMITS.withdrawMinUsd || day.s + value > LIMITS.withdrawDailyUsd) { items.forEach(x => u.S.inv.unshift(x)); throw new HttpError(400, `Вывод от $${LIMITS.withdrawMinUsd} и до $${LIMITS.withdrawDailyUsd} в сутки (осталось $${(LIMITS.withdrawDailyUsd - day.s).toFixed(2)})`); }
     q('UPDATE users SET trade_url=? WHERE id=?').run(trade, u.id);
-    const id = q('INSERT INTO withdrawals(user_id,items,value,trade_url,status,t) VALUES(?,?,?,?,?,?)').run(u.id, JSON.stringify(items), value, trade, 'pending', now()).lastInsertRowid;
-    saveUser(u); return { id: Number(id), value };
+    const auto = MARKETS.list().some(m => m.enabled) && value <= LIMITS.withdrawAutoUsd;
+    const id = Number(q('INSERT INTO withdrawals(user_id,items,value,trade_url,status,t) VALUES(?,?,?,?,?,?)').run(u.id, JSON.stringify(items), value, trade, auto ? 'processing' : 'pending', now()).lastInsertRowid);
+    for (const x of items) q('INSERT INTO purchases(withdrawal_id,user_id,item_id,name,value,status,t,updated) VALUES(?,?,?,?,?,?,?,?)').run(id, u.id, x.id, marketName(x.id), IT(x.id).price, auto ? 'queued' : 'hold', now(), now());
+    saveUser(u); if (auto) setTimeout(withdrawTick, 100); return { id, value, auto };
   }),
   'POST /api/withdraw/cancel': (c) => withUser(c, u => {
     const w = q("SELECT * FROM withdrawals WHERE id=? AND user_id=? AND status='pending'").get(+c.body.id, u.id); if (!w) throw new HttpError(404, 'Заявка не найдена');
-    q("UPDATE withdrawals SET status='cancelled' WHERE id=?").run(w.id); JSON.parse(w.items).forEach(x => u.S.inv.unshift({ uid: u.S.uid++, id: x.id })); saveUser(u); return { ok: true };
+    q("UPDATE withdrawals SET status='cancelled' WHERE id=?").run(w.id); q("UPDATE purchases SET status='cancelled' WHERE withdrawal_id=?").run(w.id); JSON.parse(w.items).forEach(x => u.S.inv.unshift({ uid: u.S.uid++, id: x.id })); saveUser(u); return { ok: true };
   }),
   // admin (Authorization: Bearer ADMIN_TOKEN)
   'POST /api/admin/promo': (c) => { admin(c); const { code, amount, uses = 100, days = 0 } = c.body; q('INSERT OR REPLACE INTO promo(code,amount,max_uses,uses,expires) VALUES(?,?,?,0,?)').run(String(code).toUpperCase(), +amount, +uses, days ? now() + days * DAY : 0); return { ok: true }; },
   'GET /api/admin/withdrawals': (c) => { admin(c); return q("SELECT w.*, u.steamid, u.name FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.id DESC LIMIT 200").all(); },
-  'POST /api/admin/withdrawal': (c) => { admin(c); q('UPDATE withdrawals SET status=?, note=? WHERE id=?').run(String(c.body.status), String(c.body.note || ''), +c.body.id); return { ok: true }; },
+  // {id, action: 'approve' | 'reject', note}: approve starts buying on the markets, reject returns the items
+  'POST /api/admin/withdrawal': (c) => {
+    admin(c); const w = q('SELECT * FROM withdrawals WHERE id=?').get(+c.body.id); if (!w) throw new HttpError(404, 'not found');
+    if (c.body.action === 'approve') { q("UPDATE withdrawals SET status='processing', note=? WHERE id=?").run(String(c.body.note || ''), w.id); q("UPDATE purchases SET status='queued', updated=? WHERE withdrawal_id=? AND status IN ('hold','waiting_funds')").run(now(), w.id); setTimeout(withdrawTick, 100); }
+    else if (c.body.action === 'reject') { for (const p of q("SELECT * FROM purchases WHERE withdrawal_id=? AND status IN ('hold','queued','waiting_funds')").all(w.id)) refundPurchase(p, String(c.body.note || 'отклонено администратором')); q("UPDATE withdrawals SET note=? WHERE id=?").run(String(c.body.note || ''), w.id); updateWithdrawal(w.id); }
+    else throw new HttpError(400, 'action: approve | reject');
+    return { ok: true };
+  },
+  'GET /api/admin/markets': async (c) => { admin(c); const out = {}; for (const m of MARKETS.list()) { out[m.id] = { enabled: m.enabled }; if (m.enabled) try { out[m.id].balance = await m.balance(); } catch (e) { out[m.id].error = e.message; } } return { markets: out, queue: q('SELECT status, COUNT(*) n, COALESCE(SUM(value),0) v FROM purchases GROUP BY status').all() }; },
+  'GET /api/admin/purchases': (c) => { admin(c); return q('SELECT * FROM purchases ORDER BY id DESC LIMIT 200').all(); },
   'POST /api/admin/ban': (c) => { admin(c); q('UPDATE users SET banned=? WHERE id=?').run(c.body.banned ? 1 : 0, +c.body.id); return { ok: true }; },
   'POST /api/admin/chat/hide': (c) => { admin(c); q('UPDATE chat SET hidden=1 WHERE id=?').run(+c.body.id); broadcast('chat_hide', { id: +c.body.id }); return { ok: true }; },
-  'GET /api/admin/stats': (c) => { admin(c); return { users: q('SELECT COUNT(*) n FROM users').get().n, bets24: q('SELECT COUNT(*) n, COALESCE(SUM(wager),0) w, COALESCE(SUM(ret),0) r FROM bets WHERE t>?').get(now() - DAY), prices: JSON.parse((q("SELECT v FROM kv WHERE k='prices'").get() || { v: '{}' }).v) }; },
+  'GET /api/admin/stats': (c) => { admin(c); return { markets: MARKETS.list().map(m => ({ id: m.id, enabled: m.enabled })), users: q('SELECT COUNT(*) n FROM users').get().n, bets24: q('SELECT COUNT(*) n, COALESCE(SUM(wager),0) w, COALESCE(SUM(ret),0) r FROM bets WHERE t>?').get(now() - DAY), prices: JSON.parse((q("SELECT v FROM kv WHERE k='prices'").get() || { v: '{}' }).v) }; },
 };
 function admin(c) { const h = String(c.req.headers.authorization || ''); if (!ADMIN_TOKEN || h.length !== ADMIN_TOKEN.length + 7 || !crypto.timingSafeEqual(Buffer.from(h), Buffer.from('Bearer ' + ADMIN_TOKEN))) throw new HttpError(403, 'forbidden'); }
 function withUser(c, fn) {

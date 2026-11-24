@@ -81,17 +81,46 @@
     { id: 'rifle', name: 'Rifleman', price: 4.99, hue: 28, items: ['ump-urban','mac10-candy','m4a4-evil','ak-elite','famas-roll','p90-asiimov','m4a1-hyper','ak-redline','ak-vulcan','m4a1-print'] },
     { id: 'pistol', name: 'Sidearm', price: 2.49, hue: 150, items: ['p250-sand','fs-forest','usp-cortex','glock-water','deagle-cobalt','usp-kill','deagle-blaze','glock-fade'] },
     { id: 'sniper', name: 'Long Shot', price: 9.99, hue: 260, items: ['g3-desert','awp-atheris','p90-asiimov','awp-hyper','deagle-blaze','awp-asiimov','m4a1-print','awp-lore'] },
-    { id: 'blade', name: 'Cold Steel', price: 24.99, hue: 45, items: ['famas-roll','deagle-cobalt','ak-redline','usp-kill','awp-hyper','ak-vulcan','k-gut','k-flip','k-m9','k-karambit','k-butterfly'] },
-    { id: 'legend', name: 'Legend', price: 99.0, hue: 350, items: ['deagle-blaze','ak-vulcan','awp-asiimov','m4a1-print','ak-fire','glock-fade','k-flip','k-m9','k-karambit','m4a4-howl','g-sport','k-butterfly','awp-lore'] },
+    { id: 'blade', name: 'Cold Steel', price: 24.99, hue: 45, items: ['m4a4-evil','awp-atheris','famas-roll','deagle-cobalt','ak-redline','usp-kill','awp-hyper','ak-vulcan','k-gut','k-flip','k-m9','k-karambit','k-butterfly'] },
+    { id: 'legend', name: 'Legend', price: 99.0, hue: 350, items: ['ak-redline','awp-hyper','usp-kill','deagle-blaze','ak-vulcan','awp-asiimov','m4a1-print','ak-fire','glock-fade','k-flip','k-m9','k-karambit','m4a4-howl','g-sport','k-butterfly','awp-lore'] },
   ];
-  const CASES = CASE_DEFS.map(c => {
-    const items = c.items.map(id => ITEMS[id]);
-    const p = solveOdds(items.map(i => i.price), items.map(i => BASE_W[i.rarity]), c.price * RTP);
-    const drops = items.map((it, i) => ({ item: it, p })).map((d, i) => ({ item: d.item, p: p[i] }));
-    drops.sort((a, b) => b.item.price - a.item.price);
+  // Each case item is a real market listing; live prices replace the defaults via applyPrices().
+  const MH = {
+    'p250-sand': 'P250 | Sand Dune (Field-Tested)', 'nova-predator': 'Nova | Predator (Field-Tested)', 'mp9-storm': 'MP9 | Storm (Battle-Scarred)',
+    'g3-desert': 'G3SG1 | Desert Storm (Field-Tested)', 'ump-urban': 'UMP-45 | Urban DDPAT (Field-Tested)', 'mac10-candy': 'MAC-10 | Candy Apple (Factory New)',
+    'fs-forest': 'Five-SeveN | Forest Night (Field-Tested)', 'glock-water': 'Glock-18 | Water Elemental (Battle-Scarred)', 'p90-asiimov': 'P90 | Asiimov (Field-Tested)',
+    'usp-cortex': 'USP-S | Cortex (Battle-Scarred)', 'm4a4-evil': 'M4A4 | Evil Daimyo (Field-Tested)', 'ak-elite': 'AK-47 | Elite Build (Field-Tested)',
+    'famas-roll': 'FAMAS | Roll Cage (Well-Worn)', 'deagle-cobalt': 'Desert Eagle | Cobalt Disruption (Minimal Wear)', 'awp-atheris': 'AWP | Atheris (Field-Tested)',
+    'ak-redline': 'AK-47 | Redline (Field-Tested)', 'm4a1-hyper': 'M4A1-S | Hyper Beast (Field-Tested)', 'usp-kill': 'USP-S | Kill Confirmed (Field-Tested)',
+    'deagle-blaze': 'Desert Eagle | Blaze (Factory New)', 'awp-hyper': 'AWP | Hyper Beast (Field-Tested)', 'ak-vulcan': 'AK-47 | Vulcan (Field-Tested)',
+    'm4a4-howl': 'M4A4 | Howl (Field-Tested)', 'awp-asiimov': 'AWP | Asiimov (Field-Tested)', 'ak-fire': 'AK-47 | Fire Serpent (Field-Tested)',
+    'm4a1-print': 'M4A1-S | Printstream (Field-Tested)', 'awp-lore': 'AWP | Dragon Lore (Field-Tested)', 'glock-fade': 'Glock-18 | Fade (Factory New)',
+    'k-butterfly': '★ Butterfly Knife | Fade (Factory New)', 'k-karambit': '★ Karambit | Doppler (Factory New)', 'k-m9': '★ M9 Bayonet | Tiger Tooth (Factory New)',
+    'k-flip': '★ Flip Knife | Marble Fade (Factory New)', 'k-gut': '★ Gut Knife | Slaughter (Field-Tested)', 'g-sport': '★ Sport Gloves | Vice (Field-Tested)',
+  };
+  const WEAR_OF = { 'Factory New': 0, 'Minimal Wear': 1, 'Field-Tested': 2, 'Well-Worn': 3, 'Battle-Scarred': 4 };
+  Object.entries(MH).forEach(([id, mh]) => { const it = ITEMS[id]; if (!it) return; it.mh = mh; it.name = mh; const m = / \(([^)]+)\)$/.exec(mh); if (m) it.wear = WEAR_OF[m[1]]; });
+  function buildCase(c) {
+    const items = c.items.map(id => ITEMS[id]).filter(i => i && i.price > 0);
+    const vals = items.map(i => i.price), lo = Math.min(...vals), hi = Math.max(...vals);
+    let price = c.price;
+    // keep the case solvable when live prices move: EV target must sit strictly inside the item range
+    if (!(price * RTP > lo * 1.02)) price = Math.ceil(lo * 1.5 / RTP) - 0.01;
+    if (!(price * RTP < hi * 0.98)) price = Math.max(0.49, Math.floor(hi * 0.5 / RTP * 100) / 100);
+    const p = solveOdds(vals, items.map(i => BASE_W[i.rarity]), price * RTP);
+    const drops = items.map((item, i) => ({ item, p: p[i] })).sort((a, b) => b.item.price - a.item.price);
     const ev = drops.reduce((a, d) => a + d.p * d.item.price, 0);
-    return { ...c, drops, ev, rtp: ev / c.price };
-  });
+    return { ...c, price, drops, ev, rtp: ev / price };
+  }
+  const CASES = CASE_DEFS.map(buildCase);
+  // lookup(marketHashName) -> { price, ... } or undefined. Recomputes every case so RTP stays exactly 97.5%.
+  function applyPrices(lookup) {
+    let n = 0;
+    for (const it of Object.values(ITEMS)) { const c = it.mh && lookup(it.mh); if (c && c.price > 0) { it.price = c.price; n++; } }
+    CATALOG.sort((a, b) => a.price - b.price);
+    CASE_DEFS.forEach((c, i) => { CASES[i] = buildCase(c); });
+    return n;
+  }
 
   // Pick a drop from cumulative probabilities with roll in [0,1).
   function pickByRoll(drops, roll) {
@@ -161,6 +190,6 @@
   async function fairRoll(serverSeed, clientSeed, nonce) { const h = await hmacHex(serverSeed, `${clientSeed}:${nonce}`); return { hash: h, roll: hexToRoll(h) }; }
   function randomHex(n) { const a = new Uint8Array(n); (typeof crypto !== 'undefined' && crypto.getRandomValues ? crypto : require('crypto').webcrypto).getRandomValues(a); return bytesToHex(a); }
 
-  const api = { RTP, RARITY, ITEMS, CATALOG, CASES, solveOdds, pickByRoll, upgradeChance, UPGRADE_MAX_CHANCE, UPGRADE_K, BONUS, plateFromRoll, resolveUpgrade, contractOutcomes, sha256Hex, hmacHex, hexToRoll, fairRoll, randomHex };
+  const api = { RTP, RARITY, ITEMS, CATALOG, CASES, CASE_DEFS, MH, applyPrices, solveOdds, pickByRoll, upgradeChance, UPGRADE_MAX_CHANCE, UPGRADE_K, BONUS, plateFromRoll, resolveUpgrade, contractOutcomes, sha256Hex, hmacHex, hexToRoll, fairRoll, randomHex };
   if (typeof module !== 'undefined') module.exports = api; else root.CF = api;
 })(this);

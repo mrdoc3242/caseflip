@@ -249,6 +249,8 @@ nav a{padding:7px 9px;font-size:14px}
 .lvbar.wide{display:block!important;background:var(--panel2)}
 @media (min-width:701px) and (max-width:1400px){.navfair{display:none}}
 @media (max-width:1300px){.lvbar:not(.wide){display:none}}
+/* withdrawals */
+.witems{display:grid;gap:2px;font-size:11.5px;color:var(--muted);margin-top:4px;white-space:normal}
 /* ---- v3: battles, crash, profile, chat, 18+, lang, mobile ---- */
 .fcase{font-size:12px;text-decoration:none;color:var(--accent2);background:#ffd16614;border:1px solid #ffd16644;border-radius:8px;padding:5px 8px;white-space:nowrap}
 .langsw{background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:6px 8px;font:600 12px var(--f-display);letter-spacing:.05em;cursor:pointer}
@@ -435,17 +437,46 @@ nav a{padding:7px 9px;font-size:14px}
     { id: 'rifle', name: 'Rifleman', price: 4.99, hue: 28, items: ['ump-urban','mac10-candy','m4a4-evil','ak-elite','famas-roll','p90-asiimov','m4a1-hyper','ak-redline','ak-vulcan','m4a1-print'] },
     { id: 'pistol', name: 'Sidearm', price: 2.49, hue: 150, items: ['p250-sand','fs-forest','usp-cortex','glock-water','deagle-cobalt','usp-kill','deagle-blaze','glock-fade'] },
     { id: 'sniper', name: 'Long Shot', price: 9.99, hue: 260, items: ['g3-desert','awp-atheris','p90-asiimov','awp-hyper','deagle-blaze','awp-asiimov','m4a1-print','awp-lore'] },
-    { id: 'blade', name: 'Cold Steel', price: 24.99, hue: 45, items: ['famas-roll','deagle-cobalt','ak-redline','usp-kill','awp-hyper','ak-vulcan','k-gut','k-flip','k-m9','k-karambit','k-butterfly'] },
-    { id: 'legend', name: 'Legend', price: 99.0, hue: 350, items: ['deagle-blaze','ak-vulcan','awp-asiimov','m4a1-print','ak-fire','glock-fade','k-flip','k-m9','k-karambit','m4a4-howl','g-sport','k-butterfly','awp-lore'] },
+    { id: 'blade', name: 'Cold Steel', price: 24.99, hue: 45, items: ['m4a4-evil','awp-atheris','famas-roll','deagle-cobalt','ak-redline','usp-kill','awp-hyper','ak-vulcan','k-gut','k-flip','k-m9','k-karambit','k-butterfly'] },
+    { id: 'legend', name: 'Legend', price: 99.0, hue: 350, items: ['ak-redline','awp-hyper','usp-kill','deagle-blaze','ak-vulcan','awp-asiimov','m4a1-print','ak-fire','glock-fade','k-flip','k-m9','k-karambit','m4a4-howl','g-sport','k-butterfly','awp-lore'] },
   ];
-  const CASES = CASE_DEFS.map(c => {
-    const items = c.items.map(id => ITEMS[id]);
-    const p = solveOdds(items.map(i => i.price), items.map(i => BASE_W[i.rarity]), c.price * RTP);
-    const drops = items.map((it, i) => ({ item: it, p })).map((d, i) => ({ item: d.item, p: p[i] }));
-    drops.sort((a, b) => b.item.price - a.item.price);
+  // Each case item is a real market listing; live prices replace the defaults via applyPrices().
+  const MH = {
+    'p250-sand': 'P250 | Sand Dune (Field-Tested)', 'nova-predator': 'Nova | Predator (Field-Tested)', 'mp9-storm': 'MP9 | Storm (Battle-Scarred)',
+    'g3-desert': 'G3SG1 | Desert Storm (Field-Tested)', 'ump-urban': 'UMP-45 | Urban DDPAT (Field-Tested)', 'mac10-candy': 'MAC-10 | Candy Apple (Factory New)',
+    'fs-forest': 'Five-SeveN | Forest Night (Field-Tested)', 'glock-water': 'Glock-18 | Water Elemental (Battle-Scarred)', 'p90-asiimov': 'P90 | Asiimov (Field-Tested)',
+    'usp-cortex': 'USP-S | Cortex (Battle-Scarred)', 'm4a4-evil': 'M4A4 | Evil Daimyo (Field-Tested)', 'ak-elite': 'AK-47 | Elite Build (Field-Tested)',
+    'famas-roll': 'FAMAS | Roll Cage (Well-Worn)', 'deagle-cobalt': 'Desert Eagle | Cobalt Disruption (Minimal Wear)', 'awp-atheris': 'AWP | Atheris (Field-Tested)',
+    'ak-redline': 'AK-47 | Redline (Field-Tested)', 'm4a1-hyper': 'M4A1-S | Hyper Beast (Field-Tested)', 'usp-kill': 'USP-S | Kill Confirmed (Field-Tested)',
+    'deagle-blaze': 'Desert Eagle | Blaze (Factory New)', 'awp-hyper': 'AWP | Hyper Beast (Field-Tested)', 'ak-vulcan': 'AK-47 | Vulcan (Field-Tested)',
+    'm4a4-howl': 'M4A4 | Howl (Field-Tested)', 'awp-asiimov': 'AWP | Asiimov (Field-Tested)', 'ak-fire': 'AK-47 | Fire Serpent (Field-Tested)',
+    'm4a1-print': 'M4A1-S | Printstream (Field-Tested)', 'awp-lore': 'AWP | Dragon Lore (Field-Tested)', 'glock-fade': 'Glock-18 | Fade (Factory New)',
+    'k-butterfly': '★ Butterfly Knife | Fade (Factory New)', 'k-karambit': '★ Karambit | Doppler (Factory New)', 'k-m9': '★ M9 Bayonet | Tiger Tooth (Factory New)',
+    'k-flip': '★ Flip Knife | Marble Fade (Factory New)', 'k-gut': '★ Gut Knife | Slaughter (Field-Tested)', 'g-sport': '★ Sport Gloves | Vice (Field-Tested)',
+  };
+  const WEAR_OF = { 'Factory New': 0, 'Minimal Wear': 1, 'Field-Tested': 2, 'Well-Worn': 3, 'Battle-Scarred': 4 };
+  Object.entries(MH).forEach(([id, mh]) => { const it = ITEMS[id]; if (!it) return; it.mh = mh; it.name = mh; const m = / \(([^)]+)\)$/.exec(mh); if (m) it.wear = WEAR_OF[m[1]]; });
+  function buildCase(c) {
+    const items = c.items.map(id => ITEMS[id]).filter(i => i && i.price > 0);
+    const vals = items.map(i => i.price), lo = Math.min(...vals), hi = Math.max(...vals);
+    let price = c.price;
+    // keep the case solvable when live prices move: EV target must sit strictly inside the item range
+    if (!(price * RTP > lo * 1.02)) price = Math.ceil(lo * 1.5 / RTP) - 0.01;
+    if (!(price * RTP < hi * 0.98)) price = Math.max(0.49, Math.floor(hi * 0.5 / RTP * 100) / 100);
+    const p = solveOdds(vals, items.map(i => BASE_W[i.rarity]), price * RTP);
+    const drops = items.map((item, i) => ({ item, p: p[i] })).sort((a, b) => b.item.price - a.item.price);
     const ev = drops.reduce((a, d) => a + d.p * d.item.price, 0);
-    return { ...c, drops, ev, rtp: ev / c.price };
-  });
+    return { ...c, price, drops, ev, rtp: ev / price };
+  }
+  const CASES = CASE_DEFS.map(buildCase);
+  // lookup(marketHashName) -> { price, ... } or undefined. Recomputes every case so RTP stays exactly 97.5%.
+  function applyPrices(lookup) {
+    let n = 0;
+    for (const it of Object.values(ITEMS)) { const c = it.mh && lookup(it.mh); if (c && c.price > 0) { it.price = c.price; n++; } }
+    CATALOG.sort((a, b) => a.price - b.price);
+    CASE_DEFS.forEach((c, i) => { CASES[i] = buildCase(c); });
+    return n;
+  }
 
   // Pick a drop from cumulative probabilities with roll in [0,1).
   function pickByRoll(drops, roll) {
@@ -515,7 +546,7 @@ nav a{padding:7px 9px;font-size:14px}
   async function fairRoll(serverSeed, clientSeed, nonce) { const h = await hmacHex(serverSeed, `${clientSeed}:${nonce}`); return { hash: h, roll: hexToRoll(h) }; }
   function randomHex(n) { const a = new Uint8Array(n); (typeof crypto !== 'undefined' && crypto.getRandomValues ? crypto : require('crypto').webcrypto).getRandomValues(a); return bytesToHex(a); }
 
-  const api = { RTP, RARITY, ITEMS, CATALOG, CASES, solveOdds, pickByRoll, upgradeChance, UPGRADE_MAX_CHANCE, UPGRADE_K, BONUS, plateFromRoll, resolveUpgrade, contractOutcomes, sha256Hex, hmacHex, hexToRoll, fairRoll, randomHex };
+  const api = { RTP, RARITY, ITEMS, CATALOG, CASES, CASE_DEFS, MH, applyPrices, solveOdds, pickByRoll, upgradeChance, UPGRADE_MAX_CHANCE, UPGRADE_K, BONUS, plateFromRoll, resolveUpgrade, contractOutcomes, sha256Hex, hmacHex, hexToRoll, fairRoll, randomHex };
   if (typeof module !== 'undefined') module.exports = api; else root.CF = api;
 })(this);
 </script>
@@ -1038,6 +1069,7 @@ async function loadCatalog(){
     const r = await fetch('catalog.json', { cache: 'no-cache' }); const d = await r.json();
     const c = GAMES.buildCatalog(d); CAT_UPDATED = c.updated; CAT = c.CAT;
     CAT.forEach(it => CATMAP.set(it.id, it));
+    CF.applyPrices(n => CATMAP.get("m:" + n)); // case items follow live market prices, odds re-solved for 97.5%
   } catch (e) { CAT = []; }
 }
 function IT(id){ return CF.ITEMS[id] || CATMAP.get(id) || { id, weapon: 'Предмет', skin: 'недоступен', rarity: 'consumer', price: 0, type: 'rifle' }; }
@@ -1598,7 +1630,7 @@ function profile(){
     <div class="panel" style="display:grid;gap:10px;align-content:start"><h2>Промокод</h2><form class="ctrl" id="promof"><input type="text" id="promo" placeholder="Например, CASEFLIP" maxlength="32" style="flex:1;min-width:140px"><button class="btn sm">Активировать</button></form><span class="sub" style="margin:0;font-size:12px">Каждый промокод можно активировать один раз.</span></div>
     <div class="panel" style="display:grid;gap:10px;align-content:start"><h2>Рефералы</h2>${u ? `<div class="ctrl"><input type="text" readonly value="${esc(refLink)}" id="reflink" style="flex:1;min-width:180px"><button class="btn sm" id="refcopy">Копировать</button></div><div class="stats"><div class="stat">Приглашено<b>${u.refs}</b></div><div class="stat">Активных<b>${u.refPaid}</b></div><div class="stat">Заработано<b>${fmt(u.refEarned || 0)}</b></div></div><span class="sub" style="margin:0;font-size:12px">Друг получает бесплатный кейс, а вы ${fmt(ME.limits.refReward)}, когда он поставит ${fmt(ME.limits.refWager)}.</span>` : '<span class="sub" style="margin:0">Реферальные ссылки работают, когда сайт запущен на сервере.</span>'}</div>
   </div>
-  ${u ? `<div class="panel" style="display:grid;gap:10px"><h2>Заявки на вывод</h2>${ME.withdrawals.length ? `<div class="tbl"><table><thead><tr><th>#</th><th>Сумма</th><th>Статус</th><th>Дата</th><th></th></tr></thead><tbody>${ME.withdrawals.map(w => `<tr><td class="m">${w.id}</td><td class="m">${fmt(w.value)}</td><td>${{ pending: 'ожидает', sent: 'отправлено', cancelled: 'отменено', rejected: 'отклонено' }[w.status] || esc(w.status)}</td><td class="m">${new Date(w.t).toLocaleString('ru-RU')}</td><td>${w.status === 'pending' ? `<button class="btn ghost sm" data-wc="${w.id}">Отменить</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="sub" style="margin:0">Заявок пока нет. Вывести скин можно из инвентаря.</div>'}</div>` : ''}
+  ${u ? `<div class="panel" style="display:grid;gap:10px"><h2>Заявки на вывод</h2>${ME.withdrawals.length ? `<div class="tbl"><table><thead><tr><th>#</th><th>Сумма</th><th>Статус</th><th>Дата</th><th></th></tr></thead><tbody>${ME.withdrawals.map(w => `<tr><td class="m">${w.id}</td><td class="m">${fmt(w.value)}</td><td>${WST[w.status] || esc(w.status)}${(w.items || []).length ? '<div class="witems">' + w.items.map(i => `<span class="${i.status === 'delivered' ? 'win' : i.status === 'refunded' ? 'lose' : ''}">${esc(i.name)}: ${PST[i.status] || esc(i.status)}${i.reason && i.status === 'refunded' ? ' (' + esc(i.reason) + ')' : ''}</span>`).join('') + '</div>' : ''}</td><td class="m">${new Date(w.t).toLocaleString('ru-RU')}</td><td>${w.status === 'pending' ? `<button class="btn ghost sm" data-wc="${w.id}">Отменить</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="sub" style="margin:0">Заявок пока нет. Вывести скин можно из инвентаря.</div>'}</div>` : ''}
   </section>`;
   $('#free').onclick = safe(async () => { if (busy) return; busy = true; const r = await act('openCase', { caseId: 'starter', free: true }); busy = false; const it = IT(r.drop); profile(); $('#freeres').innerHTML = `<div class="result">${itemCard(it, '', 'pop')}<div class="win" style="font-family:var(--f-display)">+ ${esc(it.weapon)} | ${esc(it.skin)}</div></div>`; });
   document.querySelectorAll('[data-q]').forEach(b => b.onclick = safe(async () => { const r = await act('questClaim', { id: b.dataset.q }); confetti('#3ddc97'); toast('+' + fmt(r.reward) + ' за задание'); keep(profile); }));
@@ -1613,14 +1645,17 @@ function profile(){
 }
 
 // ---------- withdraw ----------
+const WST = { pending: 'ждёт проверки', processing: 'покупаем и отправляем', sent: 'отправлено', partial: 'отправлено частично', refunded: 'возвращено в инвентарь', cancelled: 'отменено' };
+const PST = { hold: 'ждёт проверки', queued: 'в очереди', buying: 'покупаем', sent: 'продавец отправляет трейд', delivered: 'получено', refunded: 'вернули в инвентарь', waiting_funds: 'в очереди', cancelled: 'отменено' };
 function withdrawModal(uids){
   const val = uids.reduce((a, u) => a + IT(S.inv.find(x => x.uid === u).id).price, 0);
   if (!REMOTE) return modal(`<h2>Вывод в Steam</h2><p class="sub">В демо-версии вывод отключён. На сервере игрок оставляет заявку, а скин отправляет trade-бот после проверки лимитов. Бот подключается отдельно.</p><div class="ctrl"><button class="btn" data-close>Понятно</button></div>`);
   const u = ME.user;
   if (!u.steamid) return modal(`<h2>Вывод в Steam</h2><p class="sub">Чтобы выводить скины, войдите через Steam.</p><div class="ctrl"><a class="btn steam" href="/auth/steam">${STEAM_ICON}Войти через Steam</a><button class="btn ghost" data-close>Отмена</button></div>`);
   modal(`<h2>Вывод ${fmt(val)}</h2><p class="sub">Предметов: ${uids.length}. Лимит ${fmt(ME.limits.withdrawDailyUsd)} в сутки. Перед выводом нужно поставить бонусные деньги ×${ME.limits.wagerX}: сейчас ${fmt(S.stats.wager)} из ${fmt(S.stats.bonus * ME.limits.wagerX)}.</p>
-  <input type="text" id="trade" placeholder="Trade-ссылка Steam" value="${esc(u.tradeUrl || '')}"><div class="ctrl"><button class="btn" id="wdgo">Создать заявку</button><button class="btn ghost" data-close>Отмена</button></div>`);
-  $('#wdgo').onclick = safe(async () => { const d = await api('/api/withdraw', { uids, tradeUrl: $('#trade').value.trim() }); S = d.state; await reloadMe(); document.querySelector('.modal')?.remove(); invSel.clear(); toast(`Заявка #${d.res.id} на ${fmt(d.res.value)} создана`); inventory(); });
+  <p class="sub" style="margin:0">Скин покупается на маркетплейсе, и продавец сам отправит вам трейд в Steam, обычно в течение 15 минут. Примите его. Если продавец не отправит, предмет вернётся в инвентарь.</p>
+  <input type="text" id="trade" placeholder="Trade-ссылка Steam" value="${esc(u.tradeUrl || '')}"><a class="sub" style="margin:0;font-size:12px;color:var(--accent)" href="https://steamcommunity.com/my/tradeoffers/privacy#trade_offer_access_url" target="_blank" rel="noopener">Где взять trade-ссылку</a><div class="ctrl"><button class="btn" id="wdgo">Создать заявку</button><button class="btn ghost" data-close>Отмена</button></div>`);
+  $('#wdgo').onclick = safe(async () => { const d = await api('/api/withdraw', { uids, tradeUrl: $('#trade').value.trim() }); S = d.state; await reloadMe(); document.querySelector('.modal')?.remove(); invSel.clear(); toast(d.res.auto ? `Заявка #${d.res.id}: покупаем скин, ждите трейд в Steam` : `Заявка #${d.res.id} на ${fmt(d.res.value)} создана и ждёт проверки`); inventory(); });
 }
 
 // ---------- 18+ gate ----------
@@ -1708,6 +1743,9 @@ function initLang(){
 
 // ---------- English phrase map (applied to rendered text when EN is on) ----------
 const I18N = {
+  'ждёт проверки': 'awaiting review', 'покупаем и отправляем': 'buying and sending', 'отправлено частично': 'partly sent', 'возвращено в инвентарь': 'returned to inventory', 'в очереди': 'queued', 'покупаем': 'buying', 'продавец отправляет трейд': 'seller is sending the trade', 'получено': 'received', 'вернули в инвентарь': 'returned to inventory', 'Где взять trade-ссылку': 'Where to find your trade link',
+  'Скин покупается на маркетплейсе, и продавец сам отправит вам трейд в Steam, обычно в течение 15 минут. Примите его. Если продавец не отправит, предмет вернётся в инвентарь.': 'The skin is bought on a marketplace and the seller sends you a Steam trade, usually within 15 minutes. Accept it. If the seller does not send it, the item returns to your inventory.',
+  'Этот предмет нельзя вывести, его можно продать или поставить в апгрейд': 'This item cannot be withdrawn, sell it or use it in an upgrade',
   'Ставка ·': 'Bet ·', 'r = HMAC-SHA256(seed, "crash:" + номер)': 'r = HMAC-SHA256(seed, "crash:" + round)',
   'Кейсы': 'Cases', 'Батлы': 'Battles', 'Краш': 'Crash', 'Апгрейд': 'Upgrade', 'Контракты': 'Contracts', 'Инвентарь': 'Inventory', 'Профиль': 'Profile', 'Честная игра': 'Fairness',
   'Демо-режим: баланс виртуальный, пополнение и вывод реальных денег и скинов отключены.': 'Demo mode: the balance is virtual, real money and skin deposits and withdrawals are disabled.',
@@ -1768,6 +1806,7 @@ const I18N = {
   'Здесь появятся лучшие дропы игроков.': 'Players’ best drops will show up here.', 'Здесь появятся ваши лучшие дропы.': 'Your best drops will show up here.',
 };
 const I18N_RE = [
+  [/^Заявка #(\d+): покупаем скин, ждите трейд в Steam$/, 'Request #$1: buying the skin, wait for a Steam trade'], [/^Заявка #(\d+) на (.+) создана и ждёт проверки$/, 'Request #$1 for $2 created and awaiting review'],
   [/^Открыть за (.+)$/, 'Open for $1'], [/^Продать за (.+)$/, 'Sell for $1'], [/^Купить за (.+)$/, 'Buy for $1'], [/^Продано на (.+)$/, 'Sold for $1'],
   [/^Окупился: (.+)$/, 'Profit: $1'], [/^Не окупился: (.+)$/, 'No profit: $1'],
   [/^(\d+) предметов · до (.+)$/, '$1 items · up to $2'], [/^Цена (.+) · (\d+) предметов$/, 'Price $1 · $2 items'],

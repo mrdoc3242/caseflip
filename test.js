@@ -29,3 +29,6 @@ CF.fairRoll('abc','client',1).then(r=>{console.log('fair',r); console.log(ok?'AL
   for (const a of [1.01, 2, 37.5]) { const rr = 1 - 0.975 / a; console.log('crash exact boundary', a, G.crashPoint(rr - 1e-12) < a, G.crashPoint(rr + 1e-9) >= a); }
   let S2 = G.newState({ balance: 0 }); const c = ctxFor(S2); for (let i = 0; i < 3; i++) S2.stats.wager += 0; S2.stats.wager = 9.99; await G.run('sell', c, { uids: [] }).catch(e => console.log('sell empty ->', e.message));
 })();
+// cases after live market prices are applied (odds re-solved)
+{ const G = require('./src/games.js'); const { CATMAP } = G.buildCatalog(require('./dist/catalog.json')); CF.applyPrices(n => CATMAP.get('m:' + n));
+  for (const c of CF.CASES) { const ev = c.drops.reduce((a, d) => a + d.p * d.item.price, 0); console.log('live', c.id, c.price, 'RTP', (ev / c.price * 100).toFixed(4) + '%'); if (Math.abs(ev / c.price - 0.975) > 1e-9) { console.log('FAIL live case'); process.exitCode = 1; } } }
